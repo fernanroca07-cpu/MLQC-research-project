@@ -11,13 +11,11 @@ import pymatching
 import stim
 from surface_code import make_surface_circuit
 
-def wilson(errors, shots):
-    rate = errors / shots
-    z = 1.96
-    den = 1 + z*z/shots
-    mid = (rate + z*z/(2*shots))/den
-    half = z*np.sqrt(rate*(1-rate)/shots + z*z/(4*shots**2))/den
-    return max(0, mid-half), min(1, mid+half)
+def standard_error(errors, shots):
+    if shots < 1 or not 0 <= errors <= shots:
+        raise ValueError("Require shots > 0 and 0 <= errors <= shots")
+    rate = errors/shots
+    return float(np.sqrt(rate * (1 - rate) / shots))
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -40,7 +38,7 @@ def main():
     metadata = dict(vars(args), output=str(args.output), rounds="distance", stim_verison=stim.__version__, pymatching_version=pymatching.__version__, noise="All four generator noise probabilities equal p; standard MWPM", metric="Logical failure probability per full experiment; rounds=d")
     (args.output / "settings.json").write_text(json.dumps(metadata, indent=2)) 
     with (args.output / "results.csv").open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["distance", "rounds", "p", "shots", "errors", "rate", "low", "high"])
+        writer = csv.DictWriter(f, fieldnames=["distance", "rounds", "p", "shots", "errors", "rate", "standard_error"])
         writer.writeheader()
         for d in distances:
             for p in ps:
@@ -52,8 +50,8 @@ def main():
                 for start in range(0, args.shots, 5000):
                     events, actual = sampler.sample(min(5000, args.shots-start), separate_observables=True)
                     errors += int(np.count_nonzero(np.any(decoder.decode_batch(events) != actual, axis=1)))
-                low, high = wilson(errors, args.shots)
-                row = dict(distance=d, rounds=d, p=float(p), shots=args.shots, errors=errors, rate=errors/args.shots, low=low, high=high)
+                se = standard_error(errors, args.shots)
+                row = dict(distance=d, rounds=d, p=float(p), shots=args.shots, errors=errors, rate=errors/args.shots, standard_error=se)
                 rows.append(row)
                 writer.writerow(row)
                 f.flush()
@@ -64,18 +62,18 @@ def main():
     for d in distances:
         subset = [r for r in rows if r["distance"] == d]
         rates = np.array([r["rate"] for r in subset])
-        lo = np.array([r["low"] for r in subset])
-        hi = np.array([r["high"] for r in subset])
+        se = np.array([r["standard_error"] for r in subset])
         # Linear y axis keeps zero-error observations visible
-        ax.errorbar(ps, rates, yerr=[rates-lo, hi-rates], marker="o", capsize=3, label=f"d={d}, rounds={d}")
+        ax.errorbar(ps, rates, yerr=se, marker="o", capsize=3, label=f"d={d}, rounds={d}")
     ax.set_xscale("log")
     ax.set_ylim(bottom=0)
     ax.set_xlabel("Physical noise probability per p per configured location")
     ax.set_ylabel("Logical failure probability per complete experiment")
     ax.set_title(f"Rotated surface-code memory ({args.basis.upper()})  PyMatching")
     ax.grid(alpha=0.25)
+    ax.axvline(0.01, color="black", linestyle="--", label="1% reference")
     ax.legend()
-    fig.text(0.5, 0.015, "95% Wilson intervals, Crossings are finite-distance evidence, not a precise asymptotic threshold", ha="center", fontsize=9)
+    fig.text(0.5, 0.015, "$\pm 1$ standard error, Crossings are finite-distance evidence, not a precise asymptotic threshold", ha="center", fontsize=9)
     fig.tight_layout(rect=[0, 0.04, 1, 1])
     fig.savefig(args.output / "threshold.png", dpi=180)
     fig.savefig(args.output / "threshold.pdf")
